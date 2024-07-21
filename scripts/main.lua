@@ -9,6 +9,9 @@ local grid = {}
 local selectedTile = 1
 local showMenu = true
 local isErasing = false
+local layers = {}
+local currentLayer = 1
+local maxLayers = 5  -- Максимальное количество слоев
 
 local tileScrollOffset = 0
 local visibleTilesX = 18
@@ -29,6 +32,7 @@ function love.load()
     love.window.setMode(1024, 768, {resizable=false, vsync=true})
     love.window.setTitle(settings.NAME .. " - " .. settings.VERSION)
     loadAssets()
+    createNewLayer()  -- Создаем первый слой при запуске
 end
 
 function love.update(dt)
@@ -50,6 +54,35 @@ function loadAssets()
         local path = "assets/" .. filename
         local image = love.graphics.newImage(path)
         table.insert(assets, image)
+    end
+end
+
+function createNewLayer()
+    if #layers < maxLayers then
+        table.insert(layers, {})
+        currentLayer = #layers
+        print("Создан новый слой " .. currentLayer)
+    else
+        print("Достигнуто максимальное количество слоев")
+    end
+end
+
+function switchLayer(layerNum)
+    if layerNum >= 1 and layerNum <= #layers then
+        currentLayer = layerNum
+        print("Переключено на слой " .. currentLayer)
+    else
+        print("Неверный номер слоя")
+    end
+end
+
+function deleteCurrentLayer()
+    if #layers > 1 then
+        table.remove(layers, currentLayer)
+        currentLayer = math.min(currentLayer, #layers)
+        print("Удален слой. Текущий слой: " .. currentLayer)
+    else
+        print("Нельзя удалить единственный слой")
     end
 end
 
@@ -95,12 +128,14 @@ function drawGrid()
         love.graphics.line(x * tileSize, startY * tileSize, x * tileSize, (endY + 1) * tileSize)
     end
 
-    for y = startY, endY do
-        for x = startX, endX do
-            if grid[y + 1] and grid[y + 1][x + 1] and assets[grid[y + 1][x + 1]] then
-                local asset = assets[grid[y + 1][x + 1]]
-                love.graphics.setColor(1, 1, 1)
-                love.graphics.draw(asset, x * tileSize, y * tileSize, 0, tileSize / asset:getWidth(), tileSize / asset:getHeight())
+    for layerIndex, layer in ipairs(layers) do
+        for y = startY, endY do
+            for x = startX, endX do
+                if layer[y + 1] and layer[y + 1][x + 1] and assets[layer[y + 1][x + 1]] then
+                    local asset = assets[layer[y + 1][x + 1]]
+                    love.graphics.setColor(1, 1, 1, layerIndex == currentLayer and 1 or 0.5)
+                    love.graphics.draw(asset, x * tileSize, y * tileSize, 0, tileSize / asset:getWidth(), tileSize / asset:getHeight())
+                end
             end
         end
     end
@@ -169,6 +204,8 @@ function drawInfo()
     love.graphics.print("Current tool: " .. selectedTool .. (selectedTool == "brush" and " (Tile " .. selectedTile .. ")" or ""), 10, 10)
     love.graphics.print("P - Save, L - Load", 10, 30)
     love.graphics.print("ESC - Back to menu", 10, 50)
+    love.graphics.print("Current Layer: " .. currentLayer .. "/" .. #layers, 10, 90)
+    love.graphics.print("N - New Layer, PgUp/PgDn - Switch Layer, Del - Delete Layer", 10, 110)
 end
 
 function love.wheelmoved(x, y)
@@ -196,7 +233,8 @@ end
 function love.keypressed(key)
     if showMenu and key == "return" then
         showMenu = false
-        grid = {}
+        layers = {}
+        createNewLayer()
     elseif not showMenu then
         if key == "p" then saveLevel()
         elseif key == "l" then loadLevel()
@@ -206,6 +244,10 @@ function love.keypressed(key)
         elseif key == "3" then selectedTool = "bucket"
         elseif key == "4" then selectedTool = "line"
         elseif key == "5" then selectedTool = "rectangle"
+        elseif key == "n" then createNewLayer()
+        elseif key == "pageup" then switchLayer(currentLayer + 1)
+        elseif key == "pagedown" then switchLayer(currentLayer - 1)
+        elseif key == "delete" then deleteCurrentLayer()
         end
     end
 end
@@ -284,28 +326,32 @@ function love.mousereleased(x, y, button)
 end
 
 function saveLevel()
-    local data = gridWidth .. "," .. gridHeight .. "\n"
-    for y = 1, gridHeight do
-        for x = 1, gridWidth do
-            local tileValue = grid[y] and grid[y][x] or 0
-            data = data .. tileValue
-            if x < gridWidth then
-                data = data .. ","
+    local data = gridWidth .. "," .. gridHeight .. "," .. #layers .. "\n"
+    for layerIndex, layer in ipairs(layers) do
+        for y = 1, gridHeight do
+            for x = 1, gridWidth do
+                local tileValue = layer[y] and layer[y][x] or 0
+                data = data .. tileValue
+                if x < gridWidth then
+                    data = data .. ","
+                end
             end
+            data = data .. "\n"
         end
-        data = data .. "\n"
+        data = data .. "---\n"  -- Разделитель между слоями
     end
     
     local file = io.open("level.txt", "w")
     if file then
         file:write(data)
         file:close()
-        print("Level saved successfully")
+        print("Уровень успешно сохранен")
     else
-        print("Failed to save level")
+        print("Не удалось сохранить уровень")
     end
 end
 
+-- Обновите функцию loadLevel()
 function loadLevel()
     local file = io.open("level.txt", "r")
     if file then
@@ -320,38 +366,55 @@ function loadLevel()
         local dimensions = lines[1]:gmatch("[^,]+")
         gridWidth = tonumber(dimensions())
         gridHeight = tonumber(dimensions())
+        local layerCount = tonumber(dimensions())
         canvas.width = gridWidth * tileSize
         canvas.height = gridHeight * tileSize
         
-        grid = {}
-        for y = 1, #lines - 1 do
-            grid[y] = {}
-            local x = 1
-            for tile in lines[y+1]:gmatch("[^,]+") do
-                local tileValue = tonumber(tile)
-                if tileValue ~= 0 then
-                    grid[y][x] = tileValue
+        layers = {}
+        local currentLayerData = {}
+        local layerIndex = 1
+        
+        for i = 2, #lines do
+            if lines[i] == "---" then
+                table.insert(layers, currentLayerData)
+                currentLayerData = {}
+                layerIndex = layerIndex + 1
+            else
+                local row = {}
+                local x = 1
+                for tile in lines[i]:gmatch("[^,]+") do
+                    local tileValue = tonumber(tile)
+                    if tileValue ~= 0 then
+                        row[x] = tileValue
+                    end
+                    x = x + 1
                 end
-                x = x + 1
+                table.insert(currentLayerData, row)
             end
         end
-        print("Level loaded successfully")
+        
+        if #currentLayerData > 0 then
+            table.insert(layers, currentLayerData)
+        end
+        
+        currentLayer = 1
+        print("Уровень успешно загружен")
     else
-        print("Failed to load level")
+        print("Не удалось загрузить уровень")
     end
 end
 
 function applyBrush(x, y)
     if x >= 1 and x <= gridWidth and y >= 1 and y <= gridHeight then
-        grid[y] = grid[y] or {}
-        grid[y][x] = selectedTile
+        layers[currentLayer][y] = layers[currentLayer][y] or {}
+        layers[currentLayer][y][x] = selectedTile
     end
 end
 
 function applyEraser(x, y)
     if x >= 1 and x <= gridWidth and y >= 1 and y <= gridHeight then
-        if grid[y] then
-            grid[y][x] = nil
+        if layers[currentLayer][y] then
+            layers[currentLayer][y][x] = nil
         end
     end
 end
